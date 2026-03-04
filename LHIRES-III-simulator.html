@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lhires III Simulator - Fixed</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Segoe UI', Arial, sans-serif; }
+        
+        /* Loading Screen */
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; font-size: 20px; pointer-events: none;
+        }
+
+        /* Labels in 3D Space */
+        .label {
+            color: #ffffff;
+            font-family: monospace;
+            padding: 4px 8px;
+            background: rgba(0, 0, 0, 0.7);
+            border: 1px solid #4facfe;
+            border-radius: 4px;
+            font-size: 11px;
+            pointer-events: none; 
+            user-select: none;
+            text-align: center;
+        }
+
+        /* Control Panel */
+        #ui-panel {
+            position: absolute; top: 10px; right: 10px;
+            width: 300px;
+            background: rgba(30, 30, 30, 0.9);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #555;
+            color: white;
+            font-family: sans-serif;
+        }
+        h3 { margin: 0 0 10px 0; color: #4facfe; border-bottom: 1px solid #555; padding-bottom: 5px; }
+        .control-group { margin-bottom: 15px; }
+        label { display: block; font-size: 12px; color: #aaa; margin-bottom: 5px; }
+        select, input { width: 100%; box-sizing: border-box; }
+        .note { font-size: 10px; color: #888; margin-top: 3px; font-style: italic; }
+        
+        #instructions {
+            position: absolute; bottom: 10px; width: 100%;
+            text-align: center; color: #666; font-size: 12px; pointer-events: none;
+        }
+    </style>
+
+    <!-- LOAD LIBRARIES (Global/UMD Versions for stability) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/renderers/CSS2DRenderer.js"></script>
+</head>
+<body>
+
+    <div id="loading">Loading 3D Engine...</div>
+
+    <div id="ui-panel">
+        <h3>Lhires III Controls</h3>
+        
+        <div class="control-group">
+            <label>Grating Density (Resolution)</label>
+            <select id="grating-density">
+                <option value="150">150 l/mm (Low Res)</option>
+                <option value="600">600 l/mm (Medium)</option>
+                <option value="1200">1200 l/mm (High)</option>
+                <option value="2400" selected>2400 l/mm (Solar/Zoom)</option>
+            </select>
+            <div class="note">Higher l/mm spreads the spectrum wider.</div>
+        </div>
+
+        <div class="control-group">
+            <label>Micrometer (Wavelength Tuning) <span id="angle-display" style="float:right; color:#4facfe">10°</span></label>
+            <input type="range" id="micrometer" min="0" max="25" value="10" step="0.1">
+        </div>
+
+        <div class="control-group">
+            <label>Slit Width <span id="slit-display" style="float:right; color:#4facfe">0.5mm</span></label>
+            <input type="range" id="slit-width" min="0.1" max="3.0" value="0.5" step="0.1">
+        </div>
+    </div>
+
+    <div id="instructions">Left Click: Rotate | Right Click: Pan | Scroll: Zoom</div>
+
+    <script>
+        // --- 1. SETUP SCENE ---
+        // We use the global 'THREE' variable now
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111111);
+        scene.fog = new THREE.Fog(0x111111, 50, 250);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        // Position camera to see the whole bench (0 to 60)
+        camera.position.set(30, 50, 50); 
+        camera.lookAt(30, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const labelRenderer = new THREE.CSS2DRenderer();
+        labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        labelRenderer.domElement.style.position = 'absolute';
+        labelRenderer.domElement.style.top = '0px';
+        labelRenderer.domElement.style.pointerEvents = 'none'; // Click through labels
+        document.body.appendChild(labelRenderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.target.set(25, 0, 0); // Focus on the middle of the bench
+        controls.enableDamping = true;
+
+        // Hide loading text
+        document.getElementById('loading').style.display = 'none';
+
+        // --- 2. LIGHTING ---
+        const ambientLight = new THREE.AmbientLight(0x404040, 2);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(10, 50, 20);
+        scene.add(dirLight);
+
+        // --- 3. MATERIALS ---
+        const matBase = new THREE.MeshStandardMaterial({ color: 0x1a1a1a });
+        const matComponent = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.4 });
+        const matMirror = new THREE.MeshStandardMaterial({ color: 0xaaddff, metalness: 0.9, roughness: 0.1 });
+        const matGlass = new THREE.MeshPhysicalMaterial({ 
+            color: 0xccddff, transmission: 0.6, opacity: 0.4, transparent: true, roughness: 0 
+        });
+
+        // --- 4. BUILD THE OPTICAL BENCH ---
+        
+        // Base Plate
+        const base = new THREE.Mesh(new THREE.BoxGeometry(80, 1, 30), matBase);
+        base.position.set(25, -6, 0);
+        scene.add(base);
+
+        // -- Slit (at x=0) --
+        const slitGroup = new THREE.Group();
+        slitGroup.position.set(0, 8, 0);
+        scene.add(slitGroup);
+        
+        const jawGeo = new THREE.BoxGeometry(4, 0.2, 4);
+        const jawLeft = new THREE.Mesh(jawGeo, matComponent);
+        const jawRight = new THREE.Mesh(jawGeo, matComponent);
+        slitGroup.add(jawLeft);
+        slitGroup.add(jawRight);
+
+        addLabel(slitGroup, "1. Input Slit", 3);
+
+        // -- Folding Mirror (at x=0, y=0) --
+        const mirror = new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 0.5, 32), matMirror);
+        mirror.rotation.x = -Math.PI / 4; 
+        mirror.rotation.z = Math.PI / 2;
+        scene.add(mirror);
+
+        // -- Collimator Lens (at x=30) --
+        const lensDist = 30;
+        const lens = new THREE.Mesh(new THREE.CylinderGeometry(4.5, 4.5, 1, 32), matGlass);
+        lens.rotation.z = Math.PI / 2;
+        lens.position.set(lensDist, 0, 0);
+        scene.add(lens);
+        addLabel(lens, "2. Collimator Lens", 6);
+
+        // -- Grating (at x=55) --
+        const gratingDist = 55;
+        const gratingGroup = new THREE.Group();
+        gratingGroup.position.set(gratingDist, 0, 0);
+        scene.add(gratingGroup);
+
+        const gratingMesh = new THREE.Mesh(new THREE.BoxGeometry(2, 8, 8), matComponent);
+        // Create Rainbow Texture
+        const canvas = document.createElement('canvas'); canvas.width=64; canvas.height=64;
+        const ctx = canvas.getContext('2d');
+        const grad = ctx.createLinearGradient(0,0,0,64);
+        grad.addColorStop(0,'red'); grad.addColorStop(0.5,'green'); grad.addColorStop(1,'blue');
+        ctx.fillStyle = grad; ctx.fillRect(0,0,64,64);
+        ctx.fillStyle='rgba(0,0,0,0.5)'; for(let i=0;i<64;i+=2) ctx.fillRect(0,i,64,1);
+        gratingMesh.material = new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(canvas) });
+        gratingGroup.add(gratingMesh);
+        
+        const labelGrating = addLabel(gratingGroup, "3. Grating", 7);
+
+        // -- CCD (at x=-4, y=-6) --
+        const ccd = new THREE.Mesh(new THREE.BoxGeometry(2, 6, 6), new THREE.MeshStandardMaterial({color: 0x882222}));
+        ccd.position.set(-4, -6, 0);
+        scene.add(ccd);
+        addLabel(ccd, "4. CCD Camera", -5);
+
+
+        // --- 5. RAY TRACING LOGIC ---
+        const rayGroup = new THREE.Group();
+        scene.add(rayGroup);
+
+        function updateSimulation() {
+            // Get Inputs
+            const angleVal = parseFloat(document.getElementById('micrometer').value);
+            const slitVal = parseFloat(document.getElementById('slit-width').value);
+            const densityVal = parseInt(document.getElementById('grating-density').value);
+
+            // Update UI
+            document.getElementById('angle-display').innerText = angleVal.toFixed(1) + "°";
+            document.getElementById('slit-display').innerText = slitVal.toFixed(1) + "mm";
+            labelGrating.element.innerText = `3. Grating\n(${densityVal} l/mm)`;
+
+            // Move Slit Jaws
+            const gap = slitVal / 2;
+            jawLeft.position.x = -gap - 2.1;
+            jawRight.position.x = gap + 2.1;
+
+            // Rotate Grating
+            gratingGroup.rotation.z = THREE.MathUtils.degToRad(-angleVal);
+
+            // Calculate Dispersion Factor based on Density
+            // 600 l/mm is our baseline (1.0)
+            const dispersion = densityVal / 600;
+
+            // Clear Rays
+            while(rayGroup.children.length > 0) rayGroup.remove(rayGroup.children[0]);
+
+            // Trace Rays (Top edge of slit and Bottom edge of slit)
+            traceBeam(angleVal, gap, dispersion);
+            traceBeam(angleVal, -gap, dispersion);
+        }
+
+        function traceBeam(angle, offset, dispersionScale) {
+            // 1. Inbound (White)
+            const start = new THREE.Vector3(offset, 25, 0);
+            const mirrorHit = new THREE.Vector3(offset, 0, 0);
+            const lensHit = new THREE.Vector3(lensDist, offset, 0);
+            const gratingHit = new THREE.Vector3(gratingDist, offset, 0);
+
+            drawRay(start, mirrorHit, 0xffffff);
+            drawRay(mirrorHit, lensHit, 0xffffff);
+            drawRay(lensHit, gratingHit, 0xffffff);
+
+            // 2. Return (RGB)
+            // Base reflection angle
+            const baseRad = THREE.MathUtils.degToRad(angle * 1.8);
+            
+            // Slit Width Error (affects sharpness)
+            const slitError = offset * 0.05;
+
+            // Dispersion Spread
+            const spread = 0.08 * dispersionScale;
+
+            const rRad = baseRad + spread + slitError;
+            const gRad = baseRad + slitError;
+            const bRad = baseRad - spread + slitError;
+
+            traceReturnLeg(gratingHit, rRad, 0xff3333); // Red
+            traceReturnLeg(gratingHit, gRad, 0x33ff33); // Green
+            traceReturnLeg(gratingHit, bRad, 0x3333ff); // Blue
+        }
+
+        function traceReturnLeg(origin, angleRad, color) {
+            // To Lens
+            const dir = new THREE.Vector3(-1, Math.tan(angleRad), 0).normalize();
+            const distBack = lensDist - gratingDist; 
+            const yAtLens = origin.y + (distBack * Math.tan(angleRad));
+            const lensHit = new THREE.Vector3(lensDist, yAtLens, 0);
+            
+            drawRay(origin, lensHit, color);
+
+            // To CCD
+            const focalLen = 35;
+            const focusY = -(Math.tan(angleRad) * focalLen);
+            const ccdHit = new THREE.Vector3(-4, focusY, 0);
+            
+            drawRay(lensHit, ccdHit, color);
+        }
+
+        function drawRay(v1, v2, col) {
+            const geom = new THREE.BufferGeometry().setFromPoints([v1, v2]);
+            const mat = new THREE.LineBasicMaterial({ color: col, opacity: 0.6, transparent: true });
+            const line = new THREE.Line(geom, mat);
+            rayGroup.add(line);
+        }
+
+        function addLabel(obj, text, yOffset) {
+            const div = document.createElement('div');
+            div.className = 'label';
+            div.innerText = text;
+            const label = new THREE.CSS2DObject(div);
+            label.position.set(0, yOffset, 0);
+            obj.add(label);
+            return label; // return so we can update it later
+        }
+
+        // --- 6. EVENTS & LOOP ---
+        document.getElementById('micrometer').addEventListener('input', updateSimulation);
+        document.getElementById('slit-width').addEventListener('input', updateSimulation);
+        document.getElementById('grating-density').addEventListener('change', updateSimulation);
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+            labelRenderer.render(scene, camera);
+        }
+
+        updateSimulation();
+        animate();
+
+    </script>
+</body>
+</html>
