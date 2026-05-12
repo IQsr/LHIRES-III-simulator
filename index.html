@@ -1,19 +1,34 @@
 <!DOCTYPE html>
+<!--
+  LHIRES III Simulator v2 — proposed update for iqsr/LHIRES-III-simulator
+
+  Drop-in replacement for the deployed simulator. Extends the v1 (fetched from
+  https://iqsr.github.io/LHIRES-III-simulator/) with:
+    - Wavelength readout at CCD centre (λ_center) and CCD spectral span (Δλ)
+    - Spectral-line preset buttons (Hα, Hβ, Na-D, Ar lamp) that snap the
+      micrometer to put the line on the CCD
+    - 2D CCD-view HUD that mirrors the dispersed rainbow strip the detector
+      would actually record, with named lines marked when they fall in range
+    - Off-detector warning when the configured spectral window would miss the
+      currently-targeted line (the failure mode behind the case study)
+
+  The wavelength model is a teaching approximation, not a physical calibration
+  of a real LHIRES III. Hardware values (backlash, flexure, lever arm geometry)
+  are explicitly out of scope.
+-->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lhires III Simulator - Fixed</title>
+    <title>Lhires III Simulator</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Segoe UI', Arial, sans-serif; }
-        
-        /* Loading Screen */
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Segoe UI', Arial, sans-serif; color: #ccc; }
+
         #loading {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
             color: white; font-size: 20px; pointer-events: none;
         }
 
-        /* Labels in 3D Space */
         .label {
             color: #ffffff;
             font-family: monospace;
@@ -22,35 +37,84 @@
             border: 1px solid #4facfe;
             border-radius: 4px;
             font-size: 11px;
-            pointer-events: none; 
+            pointer-events: none;
             user-select: none;
             text-align: center;
+            white-space: pre;
         }
 
-        /* Control Panel */
+        /* ---- Right-side control panel ---- */
         #ui-panel {
             position: absolute; top: 10px; right: 10px;
             width: 300px;
-            background: rgba(30, 30, 30, 0.9);
+            background: rgba(30, 30, 30, 0.92);
             padding: 15px;
             border-radius: 8px;
             border: 1px solid #555;
             color: white;
             font-family: sans-serif;
         }
-        h3 { margin: 0 0 10px 0; color: #4facfe; border-bottom: 1px solid #555; padding-bottom: 5px; }
-        .control-group { margin-bottom: 15px; }
+        h3 { margin: 0 0 10px 0; color: #4facfe; border-bottom: 1px solid #555; padding-bottom: 5px; font-size: 15px; }
+        .control-group { margin-bottom: 14px; }
         label { display: block; font-size: 12px; color: #aaa; margin-bottom: 5px; }
-        select, input { width: 100%; box-sizing: border-box; }
+        select, input[type=range] { width: 100%; box-sizing: border-box; }
         .note { font-size: 10px; color: #888; margin-top: 3px; font-style: italic; }
-        
+
+        .preset-row { display: flex; flex-wrap: wrap; gap: 4px; }
+        .preset-btn {
+            flex: 1 0 auto; min-width: 60px;
+            background: #1a2535; color: #aac;
+            border: 1px solid #355; padding: 5px 8px;
+            font-size: 11px; cursor: pointer; border-radius: 4px;
+            font-family: monospace; transition: background 0.15s;
+        }
+        .preset-btn:hover { background: #25344a; color: #cef; }
+        .preset-btn.active { background: #2a4a6a; color: #fff; border-color: #4facfe; }
+
+        /* ---- Bottom-left wavelength readout panel ---- */
+        #lambda-panel {
+            position: absolute; bottom: 36px; left: 10px;
+            background: rgba(30, 30, 30, 0.92);
+            padding: 12px 14px;
+            border-radius: 8px;
+            border: 1px solid #555;
+            color: white;
+            font-family: monospace;
+            min-width: 230px;
+        }
+        #lambda-panel h4 {
+            margin: 0 0 8px 0; font-size: 12px; color: #aab;
+            text-transform: uppercase; letter-spacing: 1px;
+            border-bottom: 1px solid #444; padding-bottom: 4px;
+        }
+        .lambda-row { display: flex; justify-content: space-between; font-size: 12px; margin: 3px 0; color: #bcd; }
+        .lambda-row b { color: #4facfe; }
+        .lambda-warn { color: #ff7766; font-size: 11px; margin-top: 6px; line-height: 1.4; display: none; }
+        .lambda-warn.show { display: block; }
+
+        /* ---- Bottom-right CCD 2D-view panel ---- */
+        #ccd-view {
+            position: absolute; bottom: 36px; right: 10px;
+            width: 320px;
+            background: rgba(30, 30, 30, 0.92);
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #555;
+            font-family: monospace;
+        }
+        #ccd-view h4 {
+            margin: 0 0 6px 0; font-size: 12px; color: #aab;
+            text-transform: uppercase; letter-spacing: 1px;
+        }
+        #ccd-canvas { display: block; width: 100%; height: 50px; image-rendering: auto; border-radius: 3px; }
+        #ccd-axis { display: flex; justify-content: space-between; font-size: 10px; color: #889; margin-top: 4px; }
+
         #instructions {
             position: absolute; bottom: 10px; width: 100%;
             text-align: center; color: #666; font-size: 12px; pointer-events: none;
         }
     </style>
 
-    <!-- LOAD LIBRARIES (Global/UMD Versions for stability) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/renderers/CSS2DRenderer.js"></script>
@@ -61,7 +125,7 @@
 
     <div id="ui-panel">
         <h3>Lhires III Controls</h3>
-        
+
         <div class="control-group">
             <label>Grating Density (Resolution)</label>
             <select id="grating-density">
@@ -70,11 +134,11 @@
                 <option value="1200">1200 l/mm (High)</option>
                 <option value="2400" selected>2400 l/mm (Solar/Zoom)</option>
             </select>
-            <div class="note">Higher l/mm spreads the spectrum wider.</div>
+            <div class="note">Higher l/mm narrows the spectral window and zooms in.</div>
         </div>
 
         <div class="control-group">
-            <label>Micrometer (Wavelength Tuning) <span id="angle-display" style="float:right; color:#4facfe">10°</span></label>
+            <label>Micrometer (Wavelength Tuning) <span id="angle-display" style="float:right; color:#4facfe">10.0°</span></label>
             <input type="range" id="micrometer" min="0" max="25" value="10" step="0.1">
         </div>
 
@@ -82,20 +146,43 @@
             <label>Slit Width <span id="slit-display" style="float:right; color:#4facfe">0.5mm</span></label>
             <input type="range" id="slit-width" min="0.1" max="3.0" value="0.5" step="0.1">
         </div>
+
+        <div class="control-group">
+            <label>Target line preset</label>
+            <div class="preset-row">
+                <button class="preset-btn" data-preset="halpha" data-lambda="6563">Hα 6563</button>
+                <button class="preset-btn" data-preset="hbeta"  data-lambda="4861">Hβ 4861</button>
+                <button class="preset-btn" data-preset="nad"    data-lambda="5893">Na-D 5893</button>
+                <button class="preset-btn" data-preset="ar"     data-lambda="7635">Ar 7635</button>
+            </div>
+            <div class="note">Snaps the micrometer to put the line near CCD centre.</div>
+        </div>
     </div>
 
-    <div id="instructions">Left Click: Rotate | Right Click: Pan | Scroll: Zoom</div>
+    <div id="lambda-panel">
+        <h4>CCD Wavelength Window</h4>
+        <div class="lambda-row"><span>λ at centre</span><b id="lambda-center">—</b></div>
+        <div class="lambda-row"><span>CCD spans</span><b id="lambda-range">—</b></div>
+        <div class="lambda-row"><span>Resolving power R≈</span><b id="lambda-r">—</b></div>
+        <div id="lambda-warn" class="lambda-warn"></div>
+    </div>
+
+    <div id="ccd-view">
+        <h4>What the CCD sees</h4>
+        <canvas id="ccd-canvas" width="600" height="50"></canvas>
+        <div id="ccd-axis"><span id="ccd-min">—</span><span id="ccd-max">—</span></div>
+    </div>
+
+    <div id="instructions">Left Click: Rotate &middot; Right Click: Pan &middot; Scroll: Zoom &middot; Teaching model — not a physical calibration</div>
 
     <script>
-        // --- 1. SETUP SCENE ---
-        // We use the global 'THREE' variable now
+        // ---- 1. SCENE SETUP ----
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x111111);
         scene.fog = new THREE.Fog(0x111111, 50, 250);
 
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
-        // Position camera to see the whole bench (0 to 60)
-        camera.position.set(30, 50, 50); 
+        camera.position.set(30, 50, 50);
         camera.lookAt(30, 0, 0);
 
         const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -106,58 +193,50 @@
         labelRenderer.setSize(window.innerWidth, window.innerHeight);
         labelRenderer.domElement.style.position = 'absolute';
         labelRenderer.domElement.style.top = '0px';
-        labelRenderer.domElement.style.pointerEvents = 'none'; // Click through labels
+        labelRenderer.domElement.style.pointerEvents = 'none';
         document.body.appendChild(labelRenderer.domElement);
 
         const controls = new THREE.OrbitControls(camera, renderer.domElement);
-        controls.target.set(25, 0, 0); // Focus on the middle of the bench
+        controls.target.set(25, 0, 0);
         controls.enableDamping = true;
 
-        // Hide loading text
         document.getElementById('loading').style.display = 'none';
 
-        // --- 2. LIGHTING ---
-        const ambientLight = new THREE.AmbientLight(0x404040, 2);
-        scene.add(ambientLight);
+        // ---- 2. LIGHTING ----
+        scene.add(new THREE.AmbientLight(0x404040, 2));
         const dirLight = new THREE.DirectionalLight(0xffffff, 1);
         dirLight.position.set(10, 50, 20);
         scene.add(dirLight);
 
-        // --- 3. MATERIALS ---
+        // ---- 3. MATERIALS ----
         const matBase = new THREE.MeshStandardMaterial({ color: 0x1a1a1a });
         const matComponent = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.4 });
         const matMirror = new THREE.MeshStandardMaterial({ color: 0xaaddff, metalness: 0.9, roughness: 0.1 });
-        const matGlass = new THREE.MeshPhysicalMaterial({ 
-            color: 0xccddff, transmission: 0.6, opacity: 0.4, transparent: true, roughness: 0 
+        const matGlass = new THREE.MeshPhysicalMaterial({
+            color: 0xccddff, transmission: 0.6, opacity: 0.4, transparent: true, roughness: 0
         });
 
-        // --- 4. BUILD THE OPTICAL BENCH ---
-        
-        // Base Plate
+        // ---- 4. OPTICAL BENCH ----
         const base = new THREE.Mesh(new THREE.BoxGeometry(80, 1, 30), matBase);
         base.position.set(25, -6, 0);
         scene.add(base);
 
-        // -- Slit (at x=0) --
         const slitGroup = new THREE.Group();
         slitGroup.position.set(0, 8, 0);
         scene.add(slitGroup);
-        
+
         const jawGeo = new THREE.BoxGeometry(4, 0.2, 4);
         const jawLeft = new THREE.Mesh(jawGeo, matComponent);
         const jawRight = new THREE.Mesh(jawGeo, matComponent);
         slitGroup.add(jawLeft);
         slitGroup.add(jawRight);
-
         addLabel(slitGroup, "1. Input Slit", 3);
 
-        // -- Folding Mirror (at x=0, y=0) --
         const mirror = new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 0.5, 32), matMirror);
-        mirror.rotation.x = -Math.PI / 4; 
+        mirror.rotation.x = -Math.PI / 4;
         mirror.rotation.z = Math.PI / 2;
         scene.add(mirror);
 
-        // -- Collimator Lens (at x=30) --
         const lensDist = 30;
         const lens = new THREE.Mesh(new THREE.CylinderGeometry(4.5, 4.5, 1, 32), matGlass);
         lens.rotation.z = Math.PI / 2;
@@ -165,117 +244,115 @@
         scene.add(lens);
         addLabel(lens, "2. Collimator Lens", 6);
 
-        // -- Grating (at x=55) --
         const gratingDist = 55;
         const gratingGroup = new THREE.Group();
         gratingGroup.position.set(gratingDist, 0, 0);
         scene.add(gratingGroup);
 
         const gratingMesh = new THREE.Mesh(new THREE.BoxGeometry(2, 8, 8), matComponent);
-        // Create Rainbow Texture
-        const canvas = document.createElement('canvas'); canvas.width=64; canvas.height=64;
-        const ctx = canvas.getContext('2d');
-        const grad = ctx.createLinearGradient(0,0,0,64);
-        grad.addColorStop(0,'red'); grad.addColorStop(0.5,'green'); grad.addColorStop(1,'blue');
-        ctx.fillStyle = grad; ctx.fillRect(0,0,64,64);
-        ctx.fillStyle='rgba(0,0,0,0.5)'; for(let i=0;i<64;i+=2) ctx.fillRect(0,i,64,1);
-        gratingMesh.material = new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(canvas) });
+        const gCanvas = document.createElement('canvas'); gCanvas.width = 64; gCanvas.height = 64;
+        const gCtx = gCanvas.getContext('2d');
+        const grad = gCtx.createLinearGradient(0, 0, 0, 64);
+        grad.addColorStop(0, 'red'); grad.addColorStop(0.5, 'green'); grad.addColorStop(1, 'blue');
+        gCtx.fillStyle = grad; gCtx.fillRect(0, 0, 64, 64);
+        gCtx.fillStyle = 'rgba(0,0,0,0.5)';
+        for (let i = 0; i < 64; i += 2) gCtx.fillRect(0, i, 64, 1);
+        gratingMesh.material = new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(gCanvas) });
         gratingGroup.add(gratingMesh);
-        
         const labelGrating = addLabel(gratingGroup, "3. Grating", 7);
 
-        // -- CCD (at x=-4, y=-6) --
-        const ccd = new THREE.Mesh(new THREE.BoxGeometry(2, 6, 6), new THREE.MeshStandardMaterial({color: 0x882222}));
+        const ccd = new THREE.Mesh(new THREE.BoxGeometry(2, 6, 6), new THREE.MeshStandardMaterial({ color: 0x882222 }));
         ccd.position.set(-4, -6, 0);
         scene.add(ccd);
         addLabel(ccd, "4. CCD Camera", -5);
 
+        // CCD half-height in scene units — rays whose final Y exceeds this miss the detector
+        const CCD_HALF_HEIGHT = 3.0;
 
-        // --- 5. RAY TRACING LOGIC ---
+        // ---- 5. RAY TRACING ----
         const rayGroup = new THREE.Group();
         scene.add(rayGroup);
 
+        let currentTargetLambda = null; // Å, set by preset buttons
+
         function updateSimulation() {
-            // Get Inputs
             const angleVal = parseFloat(document.getElementById('micrometer').value);
             const slitVal = parseFloat(document.getElementById('slit-width').value);
             const densityVal = parseInt(document.getElementById('grating-density').value);
 
-            // Update UI
             document.getElementById('angle-display').innerText = angleVal.toFixed(1) + "°";
             document.getElementById('slit-display').innerText = slitVal.toFixed(1) + "mm";
             labelGrating.element.innerText = `3. Grating\n(${densityVal} l/mm)`;
 
-            // Move Slit Jaws
+            // Slit jaws
             const gap = slitVal / 2;
             jawLeft.position.x = -gap - 2.1;
             jawRight.position.x = gap + 2.1;
 
-            // Rotate Grating
+            // Grating rotation
             gratingGroup.rotation.z = THREE.MathUtils.degToRad(-angleVal);
 
-            // Calculate Dispersion Factor based on Density
-            // 600 l/mm is our baseline (1.0)
+            // Dispersion factor (same convention as v1: 600 l/mm is the visual baseline)
             const dispersion = densityVal / 600;
 
-            // Clear Rays
-            while(rayGroup.children.length > 0) rayGroup.remove(rayGroup.children[0]);
+            // Clear and redraw rays
+            while (rayGroup.children.length > 0) rayGroup.remove(rayGroup.children[0]);
+            const offCcd1 = traceBeam(angleVal, gap, dispersion);
+            const offCcd2 = traceBeam(angleVal, -gap, dispersion);
 
-            // Trace Rays (Top edge of slit and Bottom edge of slit)
-            traceBeam(angleVal, gap, dispersion);
-            traceBeam(angleVal, -gap, dispersion);
+            // Update overlays
+            updateLambdaPanel(angleVal, densityVal, offCcd1 || offCcd2);
+            updateCcdView(angleVal, densityVal);
+            updatePresetActive(angleVal, densityVal);
         }
 
         function traceBeam(angle, offset, dispersionScale) {
-            // 1. Inbound (White)
             const start = new THREE.Vector3(offset, 25, 0);
             const mirrorHit = new THREE.Vector3(offset, 0, 0);
             const lensHit = new THREE.Vector3(lensDist, offset, 0);
             const gratingHit = new THREE.Vector3(gratingDist, offset, 0);
 
-            drawRay(start, mirrorHit, 0xffffff);
-            drawRay(mirrorHit, lensHit, 0xffffff);
-            drawRay(lensHit, gratingHit, 0xffffff);
+            drawRay(start, mirrorHit, 0xffffff, false);
+            drawRay(mirrorHit, lensHit, 0xffffff, false);
+            drawRay(lensHit, gratingHit, 0xffffff, false);
 
-            // 2. Return (RGB)
-            // Base reflection angle
             const baseRad = THREE.MathUtils.degToRad(angle * 1.8);
-            
-            // Slit Width Error (affects sharpness)
             const slitError = offset * 0.05;
-
-            // Dispersion Spread
             const spread = 0.08 * dispersionScale;
 
             const rRad = baseRad + spread + slitError;
             const gRad = baseRad + slitError;
             const bRad = baseRad - spread + slitError;
 
-            traceReturnLeg(gratingHit, rRad, 0xff3333); // Red
-            traceReturnLeg(gratingHit, gRad, 0x33ff33); // Green
-            traceReturnLeg(gratingHit, bRad, 0x3333ff); // Blue
+            const offR = traceReturnLeg(gratingHit, rRad, 0xff3333);
+            const offG = traceReturnLeg(gratingHit, gRad, 0x33ff33);
+            const offB = traceReturnLeg(gratingHit, bRad, 0x3333ff);
+
+            return offR || offG || offB;
         }
 
         function traceReturnLeg(origin, angleRad, color) {
-            // To Lens
-            const dir = new THREE.Vector3(-1, Math.tan(angleRad), 0).normalize();
-            const distBack = lensDist - gratingDist; 
+            const distBack = lensDist - gratingDist;
             const yAtLens = origin.y + (distBack * Math.tan(angleRad));
             const lensHit = new THREE.Vector3(lensDist, yAtLens, 0);
-            
-            drawRay(origin, lensHit, color);
 
-            // To CCD
             const focalLen = 35;
             const focusY = -(Math.tan(angleRad) * focalLen);
             const ccdHit = new THREE.Vector3(-4, focusY, 0);
-            
-            drawRay(lensHit, ccdHit, color);
+
+            const offDetector = Math.abs(focusY) > CCD_HALF_HEIGHT;
+            drawRay(origin, lensHit, color, offDetector);
+            drawRay(lensHit, ccdHit, color, offDetector);
+            return offDetector;
         }
 
-        function drawRay(v1, v2, col) {
+        function drawRay(v1, v2, col, dimmed) {
             const geom = new THREE.BufferGeometry().setFromPoints([v1, v2]);
-            const mat = new THREE.LineBasicMaterial({ color: col, opacity: 0.6, transparent: true });
+            const mat = new THREE.LineBasicMaterial({
+                color: col,
+                opacity: dimmed ? 0.18 : 0.7,
+                transparent: true
+            });
             const line = new THREE.Line(geom, mat);
             rayGroup.add(line);
         }
@@ -287,11 +364,175 @@
             const label = new THREE.CSS2DObject(div);
             label.position.set(0, yOffset, 0);
             obj.add(label);
-            return label; // return so we can update it later
+            return label;
         }
 
-        // --- 6. EVENTS & LOOP ---
-        document.getElementById('micrometer').addEventListener('input', updateSimulation);
+        // ---- 6. WAVELENGTH MODEL ----
+        // Teaching approximation. λ_centre depends mostly on micrometer angle;
+        // the grating density mostly affects the CCD spectral width (Δλ) and
+        // the resolving power R = λ/Δλ_resolution.
+        //
+        // Calibration choices:
+        //   angle 10° at 2400 l/mm → λ ≈ 6500 Å (near Hα), matching the default
+        //   in the v1 simulator and the case study in the guide.
+        function lambdaCenter(angleDeg) {
+            return 4100 + angleDeg * 240; // Å
+        }
+        function ccdSpan(gratingLmm) {
+            return (2400 / gratingLmm) * 300; // Å across the full CCD width
+        }
+        function resolvingPower(gratingLmm, lambda) {
+            // R ~ G · slit_factor · order. Keep a simple monotonic surrogate.
+            const slit = parseFloat(document.getElementById('slit-width').value);
+            const slitPenalty = Math.max(0.25, 0.5 / slit); // narrower slit → higher R
+            return Math.round((gratingLmm * 8 * slitPenalty) / 100) * 100;
+        }
+        function angleForLambda(targetLambda) {
+            return (targetLambda - 4100) / 240;
+        }
+
+        const KNOWN_LINES = [
+            { name: 'Hβ',   lambda: 4861, color: '#5cb8ff' },
+            { name: 'Hg',   lambda: 5461, color: '#6affb8' },
+            { name: 'Na-D', lambda: 5893, color: '#ffd166' },
+            { name: 'Hα',   lambda: 6563, color: '#ff5e5e' },
+            { name: 'He I', lambda: 6678, color: '#ff8aa3' },
+            { name: 'Ar I', lambda: 7635, color: '#ffb15e' },
+        ];
+
+        // ---- 7. WAVELENGTH READOUT PANEL ----
+        function updateLambdaPanel(angleDeg, gratingLmm, anyOffCcd) {
+            const lc = lambdaCenter(angleDeg);
+            const span = ccdSpan(gratingLmm);
+            const lmin = lc - span / 2;
+            const lmax = lc + span / 2;
+            const R = resolvingPower(gratingLmm, lc);
+
+            document.getElementById('lambda-center').innerText = `${lc.toFixed(0)} Å`;
+            document.getElementById('lambda-range').innerText  = `${lmin.toFixed(0)}–${lmax.toFixed(0)} Å`;
+            document.getElementById('lambda-r').innerText      = `${R.toLocaleString()}`;
+
+            const warn = document.getElementById('lambda-warn');
+            if (currentTargetLambda !== null) {
+                if (currentTargetLambda < lmin || currentTargetLambda > lmax) {
+                    const off = currentTargetLambda < lmin
+                        ? `${(lmin - currentTargetLambda).toFixed(0)} Å redward of CCD`
+                        : `${(currentTargetLambda - lmax).toFixed(0)} Å blueward of CCD`;
+                    warn.innerText = `⚠ Target line (${currentTargetLambda} Å) is off the detector — ${off}. This is the failure mode from the guide's case study.`;
+                    warn.classList.add('show');
+                } else {
+                    warn.classList.remove('show');
+                }
+            } else if (anyOffCcd) {
+                warn.innerText = `⚠ Dispersed beams miss the CCD edge at this grating angle.`;
+                warn.classList.add('show');
+            } else {
+                warn.classList.remove('show');
+            }
+        }
+
+        // ---- 8. CCD 2D VIEW ----
+        const ccdCanvas = document.getElementById('ccd-canvas');
+        const ccdCtx = ccdCanvas.getContext('2d');
+
+        function wavelengthToRGB(lambda) {
+            // Bruton-style visible-spectrum approximation, returns "rgb(...)" string.
+            let r = 0, g = 0, b = 0;
+            if (lambda >= 380 && lambda < 440)      { r = -(lambda - 440) / 60; b = 1; }
+            else if (lambda >= 440 && lambda < 490) { g = (lambda - 440) / 50; b = 1; }
+            else if (lambda >= 490 && lambda < 510) { g = 1; b = -(lambda - 510) / 20; }
+            else if (lambda >= 510 && lambda < 580) { r = (lambda - 510) / 70; g = 1; }
+            else if (lambda >= 580 && lambda < 645) { r = 1; g = -(lambda - 645) / 65; }
+            else if (lambda >= 645 && lambda <= 780){ r = 1; }
+            let factor = 1;
+            if (lambda < 420)      factor = 0.3 + 0.7 * (lambda - 380) / 40;
+            else if (lambda > 700) factor = 0.3 + 0.7 * (780 - lambda) / 80;
+            factor = Math.max(0, Math.min(1, factor));
+            return `rgb(${Math.round(r * factor * 255)},${Math.round(g * factor * 255)},${Math.round(b * factor * 255)})`;
+        }
+
+        function updateCcdView(angleDeg, gratingLmm) {
+            const lc = lambdaCenter(angleDeg);
+            const span = ccdSpan(gratingLmm);
+            const lmin = lc - span / 2;
+            const lmax = lc + span / 2;
+
+            const W = ccdCanvas.width;
+            const H = ccdCanvas.height;
+            ccdCtx.fillStyle = '#000';
+            ccdCtx.fillRect(0, 0, W, H);
+
+            // Rainbow strip (visible only; outside 3800-7800 Å is shown as dark)
+            for (let x = 0; x < W; x++) {
+                const lam = lmin + (lmax - lmin) * (x / W);
+                const lamNm = lam / 10;
+                if (lamNm >= 380 && lamNm <= 780) {
+                    ccdCtx.fillStyle = wavelengthToRGB(lamNm);
+                } else {
+                    ccdCtx.fillStyle = '#1a1a1a';
+                }
+                ccdCtx.fillRect(x, 8, 1, H - 16);
+            }
+
+            // Known-line markers
+            KNOWN_LINES.forEach(line => {
+                if (line.lambda >= lmin && line.lambda <= lmax) {
+                    const x = ((line.lambda - lmin) / (lmax - lmin)) * W;
+                    ccdCtx.strokeStyle = '#000';
+                    ccdCtx.lineWidth = 2;
+                    ccdCtx.beginPath();
+                    ccdCtx.moveTo(x, 8); ccdCtx.lineTo(x, H - 8);
+                    ccdCtx.stroke();
+
+                    ccdCtx.fillStyle = line.color;
+                    ccdCtx.font = '10px monospace';
+                    ccdCtx.textAlign = 'center';
+                    ccdCtx.fillText(line.name, x, 6);
+                }
+            });
+
+            // Target highlight
+            if (currentTargetLambda !== null && currentTargetLambda >= lmin && currentTargetLambda <= lmax) {
+                const x = ((currentTargetLambda - lmin) / (lmax - lmin)) * W;
+                ccdCtx.strokeStyle = '#fff';
+                ccdCtx.lineWidth = 1;
+                ccdCtx.setLineDash([4, 3]);
+                ccdCtx.beginPath();
+                ccdCtx.moveTo(x, 0); ccdCtx.lineTo(x, H);
+                ccdCtx.stroke();
+                ccdCtx.setLineDash([]);
+            }
+
+            document.getElementById('ccd-min').innerText = `${lmin.toFixed(0)} Å`;
+            document.getElementById('ccd-max').innerText = `${lmax.toFixed(0)} Å`;
+        }
+
+        // ---- 9. PRESETS ----
+        function updatePresetActive(angleDeg, gratingLmm) {
+            document.querySelectorAll('.preset-btn').forEach(b => {
+                const lam = parseFloat(b.dataset.lambda);
+                const span = ccdSpan(gratingLmm);
+                const lc = lambdaCenter(angleDeg);
+                b.classList.toggle('active', Math.abs(lc - lam) < span * 0.1);
+            });
+        }
+
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const targetLambda = parseFloat(btn.dataset.lambda);
+                currentTargetLambda = targetLambda;
+                const targetAngle = angleForLambda(targetLambda);
+                const clamped = Math.max(0, Math.min(25, targetAngle));
+                document.getElementById('micrometer').value = clamped.toFixed(1);
+                updateSimulation();
+            });
+        });
+
+        // ---- 10. EVENTS & LOOP ----
+        document.getElementById('micrometer').addEventListener('input', () => {
+            currentTargetLambda = null;
+            updateSimulation();
+        });
         document.getElementById('slit-width').addEventListener('input', updateSimulation);
         document.getElementById('grating-density').addEventListener('change', updateSimulation);
 
@@ -311,7 +552,6 @@
 
         updateSimulation();
         animate();
-
     </script>
 </body>
 </html>
